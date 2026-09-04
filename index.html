@@ -565,8 +565,7 @@ body { padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-b
 <div class="voice-status" id="voice-status"></div>
 <div id="af"></div>
 <img id="rr-gif" class="rr-gif" src="assets/rickroll.webp" alt="" aria-hidden="true">
-<iframe id="rr-audio" title="" style="position:fixed;width:0;height:0;border:0;opacity:0;pointer-events:none"
-  allow="autoplay" aria-hidden="true"></iframe>
+<audio id="rr-audio" src="assets/rickroll.mp3" loop preload="none" aria-hidden="true"></audio>
 
 <!-- MODAL -->
 <div class="ov" id="modal" onclick="if(event.target===this)closeModal()">
@@ -814,20 +813,21 @@ function tone(f,d,v=.2,type='square',del=0) {
 let alarmInt=null, alarmAutoStop=null, alarmSoundActive=false;
 
 /* ── RICKROLL ─────────────────────────────────────────────────────── */
-const RR_VIDEO_ID = '7FwDP17XPlk'; // Rick Astley — Never Gonna Give You Up
 function startRickroll() {
   try {
-    const f = document.getElementById('rr-audio');
-    f.src = 'https://www.youtube-nocookie.com/embed/' + RR_VIDEO_ID +
-      '?autoplay=1&start=42&loop=1&playlist=' + RR_VIDEO_ID +
-      '&controls=0&modestbranding=1&rel=0&playsinline=1';
+    const a = document.getElementById('rr-audio');
+    a.volume = S.volume;
+    a.currentTime = 0;
+    const playFromHook = () => { try { a.currentTime = 42; } catch(e) {} a.removeEventListener('loadedmetadata', playFromHook); };
+    a.addEventListener('loadedmetadata', playFromHook);
+    a.play().catch(()=>{});
   } catch(e) {}
   const g = document.getElementById('rr-gif');
   if (g) g.classList.add('show');
 }
 function stopRickroll() {
-  const f = document.getElementById('rr-audio');
-  if (f) f.src = ''; // unloading stops YouTube playback
+  const a = document.getElementById('rr-audio');
+  if (a) { try { a.pause(); a.currentTime = 0; } catch(e) {} }
   const g = document.getElementById('rr-gif');
   if (g) g.classList.remove('show');
 }
