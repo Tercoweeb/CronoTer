@@ -244,6 +244,17 @@ img{display:block;max-width:100%}
 #af.on{display:block;animation:fl .7s infinite alternate}
 @keyframes fl{from{background:rgba(206,0,0,.04)}to{background:rgba(206,0,0,.13)}}
 
+/* RICKROLL */
+.rr-gif{
+  display:none;position:fixed;right:10px;
+  bottom:calc(10px + env(safe-area-inset-bottom));
+  width:120px;max-width:30vw;pointer-events:none;z-index:49;
+  filter:drop-shadow(0 8px 18px rgba(0,0,0,.6));
+}
+.rr-gif.show{display:block;animation:rr-bob 1.2s ease-in-out infinite}
+@keyframes rr-bob{0%,100%{transform:translateY(0) rotate(-3deg)}50%{transform:translateY(-16px) rotate(3deg)}}
+@media(max-width:480px){.rr-gif{width:88px;right:6px}}
+
 /* MODAL */
 .ov{display:none;position:fixed;inset:0;background:rgba(0,0,0,.88);z-index:200;align-items:flex-end;justify-content:center}
 .ov.open{display:flex}
@@ -553,6 +564,9 @@ body { padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-b
 
 <div class="voice-status" id="voice-status"></div>
 <div id="af"></div>
+<img id="rr-gif" class="rr-gif" src="assets/rickroll.webp" alt="" aria-hidden="true">
+<iframe id="rr-audio" title="" style="position:fixed;width:0;height:0;border:0;opacity:0;pointer-events:none"
+  allow="autoplay" aria-hidden="true"></iframe>
 
 <!-- MODAL -->
 <div class="ov" id="modal" onclick="if(event.target===this)closeModal()">
@@ -776,7 +790,8 @@ async function requestNotifPerm() {
 }
 
 function scheduleNotif(groupId, groupNum, endTime, itemNames) {
-  // SW handles countdown display and final alarm notification
+  // El SW decide si mostrar notificación al terminar (solo si la app está
+  // en segundo plano) y avisa a la app para disparar la alarma sonora.
   swMsg({ type: 'SCHEDULE', groupId, groupNum, endTime, itemNames });
 }
 function cancelNotif(groupId) {
@@ -798,28 +813,54 @@ function tone(f,d,v=.2,type='square',del=0) {
 }
 let alarmInt=null, alarmAutoStop=null, alarmSoundActive=false;
 
+/* ── RICKROLL ─────────────────────────────────────────────────────── */
+const RR_VIDEO_ID = '7FwDP17XPlk'; // Rick Astley — Never Gonna Give You Up
+function startRickroll() {
+  try {
+    const f = document.getElementById('rr-audio');
+    f.src = 'https://www.youtube-nocookie.com/embed/' + RR_VIDEO_ID +
+      '?autoplay=1&start=42&loop=1&playlist=' + RR_VIDEO_ID +
+      '&controls=0&modestbranding=1&rel=0&playsinline=1';
+  } catch(e) {}
+  const g = document.getElementById('rr-gif');
+  if (g) g.classList.add('show');
+}
+function stopRickroll() {
+  const f = document.getElementById('rr-audio');
+  if (f) f.src = ''; // unloading stops YouTube playback
+  const g = document.getElementById('rr-gif');
+  if (g) g.classList.remove('show');
+}
 
 function startAlarm() {
   // Prevent double-start
-  if (alarmRunning) { return; }
-  alarmRunning = true;
+  if (alarmSoundActive) { return; }
+  alarmSoundActive = true;
   if (alarmInt) clearInterval(alarmInt);
   if (alarmAutoStop) clearTimeout(alarmAutoStop);
 
-  const beep = () => [0, .18, .36, .54].forEach((d, i) => tone(i % 2 ? 660 : 880, .14, .22, 'square', d));
-  beep();
-  alarmInt = setInterval(beep, 1200);
+  const rickrollOn = S.rickroll && S.soundEnabled;
+
+  if (rickrollOn) {
+    startRickroll();
+  } else {
+    const beep = () => [0, .18, .36, .54].forEach((d, i) => tone(i % 2 ? 660 : 880, .14, .22, 'square', d));
+    beep();
+    alarmInt = setInterval(beep, 1200);
+  }
   document.getElementById('af').classList.add('on');
   if (S.vibration && navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 600]);
 
-  // Auto-mute after 15 seconds if voice didn't stop it
-  alarmAutoStop = setTimeout(() => {
-    clearInterval(alarmInt); alarmInt = null;
-    // Keep visual alarm + button, just stop the noise
-    if (groups.some(g => g.status === 'done')) {
-      toast('Alarma silenciada — pulsa "Sacar del horno"');
-    }
-  }, 15000);
+  // Auto-mute after 15 seconds if voice didn't stop it (rickroll plays on until stopped manually)
+  if (!rickrollOn) {
+    alarmAutoStop = setTimeout(() => {
+      clearInterval(alarmInt); alarmInt = null;
+      // Keep visual alarm + button, just stop the noise
+      if (groups.some(g => g.status === 'done')) {
+        toast('Alarma silenciada — pulsa "Sacar del horno"');
+      }
+    }, 15000);
+  }
 
   // Start voice recognition to listen for "stop"
   if (voiceSupported && S.soundEnabled) startVoice();
@@ -829,6 +870,7 @@ function stopAlarmSound() {
   clearTimeout(alarmAutoStop); alarmAutoStop=null;
   alarmSoundActive = false;
   stopVoice();
+  stopRickroll();
   // Keep flash visible while groups are done
 }
 
@@ -889,7 +931,7 @@ function stopAllAlarms() {
 /* ── STATE ────────────────────────────────────────────────────────── */
 let groups=[],history=[],gCnt=0,tickId=null,warned=new Set();
 let _pSl=-1,_pPz=-1;
-const DEFS={defaultDuration:120,volume:.7,soundEnabled:true,vibration:true,confirmDelete:false,showSecs:true,sort:true,warnPct:40,urgentPct:15};
+const DEFS={defaultDuration:120,volume:.7,soundEnabled:true,vibration:true,confirmDelete:false,showSecs:true,sort:true,warnPct:40,urgentPct:15,rickroll:false};
 let S=Object.assign({},DEFS,JSON.parse(localStorage.getItem('ct_s')||'{}'));
 function saveS() { localStorage.setItem('ct_s',JSON.stringify(S)); }
 
@@ -1267,6 +1309,10 @@ function renderSp() {
       <div class="sp-row"><label>Vibración</label>
         <div class="tog${S.vibration?' on':''}"
           onclick="S.vibration=!S.vibration;this.classList.toggle('on');saveS()"></div>
+      </div>
+      <div class="sp-row"><label>Rickroll 🎵</label>
+        <div class="tog${S.rickroll?' on':''}"
+          onclick="S.rickroll=!S.rickroll;this.classList.toggle('on');saveS()"></div>
       </div>
     </div>
     <div class="pg">

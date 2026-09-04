@@ -1,11 +1,11 @@
-// CronoTerco Service Worker v3.0
-// Notificaciones con cuenta atrás + acciones (+30s, -15s, cancelar, sacar del horno)
+// CronoTerco Service Worker v4.0
+// Notificación única al terminar el temporizador, solo si la app está en
+// segundo plano (si está en primer plano, ya se ve/oye la alarma en la app).
 
-const CACHE = 'ct-v3';
+const CACHE = 'ct-v4';
 const CACHE_URLS = ['./', './index.html', './manifest.json'];
 
 const timers = {};          // groupId → setTimeout (alarma final)
-const countdowns = {};      // groupId → setInterval (actualización de cuenta atrás)
 
 // ── INSTALL ────────────────────────────────────────────────────────
 self.addEventListener('install', e => {
@@ -35,28 +35,28 @@ self.addEventListener('fetch', e => {
 });
 
 // ── HELPERS ────────────────────────────────────────────────────────
-function fmtTime(secs) {
-  const m = Math.floor(secs / 60), s = secs % 60;
-  return m > 0 ? m + ':' + s.toString().padStart(2, '0') : s + 's';
+function clearGroup(id) {
+  if (timers[id]) { clearTimeout(timers[id]); delete timers[id]; }
 }
 
-function clearGroup(id) {
-  if (timers[id])    { clearTimeout(timers[id]);    delete timers[id]; }
-  if (countdowns[id]){ clearInterval(countdowns[id]); delete countdowns[id]; }
+async function getWindowClients() {
+  return clients.matchAll({ type: 'window', includeUncontrolled: true });
 }
 
 async function msgClients(data) {
-  const cls = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const cls = await getWindowClients();
   cls.forEach(c => c.postMessage(data));
   return cls.length;
 }
 
+// True if the app is open AND visible (foreground) in at least one tab/window.
+// If so, the page itself already shows/plays the alarm — no OS notification needed.
+async function isAppInForeground() {
+  const cls = await getWindowClients();
+  return cls.some(c => c.visibilityState === 'visible' && c.focused !== false);
+}
+
 function notifActions(type) {
-  if (type === 'countdown') return [
-    { action: 'plus30',  title: '+30s' },
-    { action: 'minus15', title: '−15s' },
-    { action: 'dismiss', title: '✕ Cancelar' },
-  ];
   if (type === 'alarm') return [
     { action: 'accept', title: '✓ Sacar del horno' },
     { action: 'snooze', title: '+2 min' },
@@ -64,33 +64,8 @@ function notifActions(type) {
   return [];
 }
 
-// ── SHOW COUNTDOWN NOTIFICATION (updates every 30s) ─────────────────
-function showCountdown(groupId, groupNum, endTime, itemNames, isFirst) {
-  const rem = Math.max(0, Math.ceil((endTime - Date.now()) / 1000));
-  if (rem <= 0) return;
-  const timeStr = fmtTime(rem);
-  const body = (itemNames || []).join(', ');
-  self.registration.showNotification(
-    `⏱ Grupo #${groupNum}  —  ${timeStr} restantes`,
-    {
-      body,
-      tag: 'ct-' + groupId,
-      silent: !isFirst,
-      requireInteraction: false,
-      icon: '/CronoTerco/icons/icon-192.png',
-      badge: '/CronoTerco/icons/icon-96.png',
-      actions: notifActions('countdown'),
-      data: { groupId, groupNum, endTime, itemNames, ntype: 'countdown' },
-    }
-  );
-}
-
 // ── SHOW ALARM NOTIFICATION ─────────────────────────────────────────
 async function showAlarm(groupId, groupNum, itemNames) {
-  // Close countdown notification first
-  const existing = await self.registration.getNotifications({ tag: 'ct-' + groupId });
-  existing.forEach(n => n.close());
-
   self.registration.showNotification(
     `🔥 ¡LISTO!  —  Grupo #${groupNum}`,
     {
@@ -107,28 +82,27 @@ async function showAlarm(groupId, groupNum, itemNames) {
 }
 
 // ── SCHEDULE A GROUP ────────────────────────────────────────────────
+// No hay notificación de cuenta atrás (la Notification API no permite un
+// contador en vivo dentro de la propia notificación, como sí hace el
+// temporizador nativo del sistema). En su lugar: al terminar, si la app
+// está en primer plano no hace falta avisar (ya se ve y se oye ahí mismo);
+// si está en segundo plano (o cerrada), se muestra una notificación única.
 function scheduleGroup({ groupId, groupNum, endTime, itemNames }) {
   clearGroup(groupId);
   const delay = endTime - Date.now();
-  if (delay <= 0) { showAlarm(groupId, groupNum, itemNames); return; }
 
-  // Show initial countdown notification
-  showCountdown(groupId, groupNum, endTime, itemNames, true);
-
-  // Update every 30 seconds
-  countdowns[groupId] = setInterval(() => {
-    const rem = Math.ceil((endTime - Date.now()) / 1000);
-    if (rem <= 0) { clearInterval(countdowns[groupId]); delete countdowns[groupId]; return; }
-    showCountdown(groupId, groupNum, endTime, itemNames, false);
-  }, 30000);
-
-  // Final alarm
-  timers[groupId] = setTimeout(async () => {
-    clearInterval(countdowns[groupId]); delete countdowns[groupId];
-    await showAlarm(groupId, groupNum, itemNames);
-    // Tell open pages to trigger in-app alarm
+  const fire = async () => {
+    delete timers[groupId];
+    const foreground = await isAppInForeground();
+    if (!foreground) {
+      await showAlarm(groupId, groupNum, itemNames);
+    }
+    // Tell open pages (foreground or backgrounded) to trigger in-app alarm
     await msgClients({ type: 'TIMER_DONE', groupId, groupNum });
-  }, delay);
+  };
+
+  if (delay <= 0) { fire(); return; }
+  timers[groupId] = setTimeout(fire, delay);
 }
 
 // ── MESSAGE HANDLER ─────────────────────────────────────────────────
@@ -140,7 +114,6 @@ self.addEventListener('message', e => {
       break;
     case 'CANCEL':
       clearGroup(d.groupId);
-      self.registration.getNotifications({ tag: 'ct-' + d.groupId }).then(ns => ns.forEach(n => n.close()));
       self.registration.getNotifications({ tag: 'alarm-' + d.groupId }).then(ns => ns.forEach(n => n.close()));
       break;
     case 'DISMISS_ALL':
@@ -161,28 +134,6 @@ self.addEventListener('notificationclick', e => {
   const { groupId, groupNum, endTime, itemNames, ntype } = n.data || {};
 
   n.close();
-
-  if (action === 'plus30') {
-    const newEnd = (endTime || Date.now()) + 30000;
-    clearGroup(groupId);
-    scheduleGroup({ groupId, groupNum, endTime: newEnd, itemNames });
-    e.waitUntil(msgClients({ type: 'ADJUST_TIME', groupId, delta: 30 }));
-    return;
-  }
-
-  if (action === 'minus15') {
-    const newEnd = Math.max(Date.now() + 5000, (endTime || Date.now()) - 15000);
-    clearGroup(groupId);
-    scheduleGroup({ groupId, groupNum, endTime: newEnd, itemNames });
-    e.waitUntil(msgClients({ type: 'ADJUST_TIME', groupId, delta: -15 }));
-    return;
-  }
-
-  if (action === 'dismiss') {
-    clearGroup(groupId);
-    e.waitUntil(msgClients({ type: 'CANCEL_GROUP', groupId }));
-    return;
-  }
 
   if (action === 'accept') {
     clearGroup(groupId);
