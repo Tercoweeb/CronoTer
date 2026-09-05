@@ -566,6 +566,7 @@ body { padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-b
 <div id="af"></div>
 <img id="rr-gif" class="rr-gif" src="assets/rickroll.webp" alt="" aria-hidden="true">
 <audio id="rr-audio" src="assets/rickroll.mp3" loop preload="none" aria-hidden="true"></audio>
+<audio id="fc-audio" src="assets/thefinalcutdown.mp3" loop preload="none" aria-hidden="true"></audio>
 
 <!-- MODAL -->
 <div class="ov" id="modal" onclick="if(event.target===this)closeModal()">
@@ -812,50 +813,73 @@ function tone(f,d,v=.2,type='square',del=0) {
 }
 let alarmInt=null, alarmAutoStop=null, alarmSoundActive=false;
 
-/* ── RICKROLL ─────────────────────────────────────────────────────── */
-let rrUnlocked = false;
-let rrBeepFallbackInt = null;
-function unlockRickrollAudio() {
+/* ── MODOS ESPECIALES DE ALARMA (Rickroll / The Final Cut Down) ─────
+   Los dos funcionan exactamente igual: audio en loop que sustituye al
+   beep normal. Son mutuamente excluyentes (ver toggles en ajustes) y
+   comparten toda esta lógica; la única diferencia es que Rickroll
+   además muestra el gif.                                            */
+const SPECIAL_MODES = {
+  rickroll:  { audioId: 'rr-audio', gifId: 'rr-gif', seekTo: 42 },
+  fc:        { audioId: 'fc-audio', gifId: null,     seekTo: 0  }
+};
+let specialUnlocked = { rickroll:false, fc:false };
+let specialBeepFallbackInt = null;
+
+function activeSpecialMode() {
+  if (S.rickroll) return 'rickroll';
+  if (S.finalCutDown) return 'fc';
+  return null;
+}
+
+function unlockSpecialAudio() {
   // Mobile browsers only allow an <audio> element to be started
   // programmatically (from a setTimeout/tick, not a direct tap) once it has
-  // already been played+paused inside a real user gesture. We do that once,
-  // silently, on the first tap/click of the session — same trick already
-  // used for the beep AudioContext below.
-  if (rrUnlocked) return;
-  try {
-    const a = document.getElementById('rr-audio');
-    if (!a) return;
-    const p = a.play();
-    if (p && p.catch) p.catch(() => {});
-    a.pause();
-    a.currentTime = 0;
-    rrUnlocked = true;
-  } catch (e) {}
+  // already been played+paused inside a real user gesture. We do that once
+  // per audio element, silently, on the first tap/click of the session —
+  // same trick already used for the beep AudioContext below.
+  Object.keys(SPECIAL_MODES).forEach(mode => {
+    if (specialUnlocked[mode]) return;
+    try {
+      const a = document.getElementById(SPECIAL_MODES[mode].audioId);
+      if (!a) return;
+      const p = a.play();
+      if (p && p.catch) p.catch(() => {});
+      a.pause();
+      a.currentTime = 0;
+      specialUnlocked[mode] = true;
+    } catch (e) {}
+  });
 }
-function startRickroll() {
-  const g = document.getElementById('rr-gif');
-  if (g) g.classList.add('show');
+
+function startSpecialAlarm(mode) {
+  const cfg = SPECIAL_MODES[mode];
+  if (cfg.gifId) {
+    const g = document.getElementById(cfg.gifId);
+    if (g) g.classList.add('show');
+  }
   try {
-    const a = document.getElementById('rr-audio');
+    const a = document.getElementById(cfg.audioId);
     a.volume = S.volume;
     a.currentTime = 0;
-    const playFromHook = () => { try { a.currentTime = 42; } catch(e) {} a.removeEventListener('loadedmetadata', playFromHook); };
-    a.addEventListener('loadedmetadata', playFromHook);
+    if (cfg.seekTo) {
+      const playFromHook = () => { try { a.currentTime = cfg.seekTo; } catch(e) {} a.removeEventListener('loadedmetadata', playFromHook); };
+      a.addEventListener('loadedmetadata', playFromHook);
+    }
     const p = a.play();
     if (p && p.then) {
       p.then(() => {
         // Playing fine — make sure any beep fallback isn't also running.
-        if (rrBeepFallbackInt) { clearInterval(rrBeepFallbackInt); rrBeepFallbackInt = null; }
+        if (specialBeepFallbackInt) { clearInterval(specialBeepFallbackInt); specialBeepFallbackInt = null; }
       }).catch(() => {
         // Autoplay blocked (no unlocked user-gesture yet, e.g. alarm fired
         // while the tab was in the background). Fall back to beeps so the
-        // alarm is never silent, and keep retrying the rickroll audio on
+        // alarm is never silent, and keep retrying the special audio on
         // the next tap so it takes over as soon as it's allowed to play.
         startBeepFallback();
         const retry = () => {
           document.removeEventListener('click', retry);
           document.removeEventListener('touchstart', retry);
-          if (alarmSoundActive && S.rickroll && S.soundEnabled) startRickroll();
+          if (alarmSoundActive && activeSpecialMode() === mode && S.soundEnabled) startSpecialAlarm(mode);
         };
         document.addEventListener('click', retry, { once: true });
         document.addEventListener('touchstart', retry, { once: true });
@@ -864,17 +888,21 @@ function startRickroll() {
   } catch(e) { startBeepFallback(); }
 }
 function startBeepFallback() {
-  if (rrBeepFallbackInt) return;
+  if (specialBeepFallbackInt) return;
   const beep = () => [0, .18, .36, .54].forEach((d, i) => tone(i % 2 ? 660 : 880, .14, .22, 'square', d));
   beep();
-  rrBeepFallbackInt = setInterval(beep, 1200);
+  specialBeepFallbackInt = setInterval(beep, 1200);
 }
-function stopRickroll() {
-  const a = document.getElementById('rr-audio');
-  if (a) { try { a.pause(); a.currentTime = 0; } catch(e) {} }
-  const g = document.getElementById('rr-gif');
-  if (g) g.classList.remove('show');
-  if (rrBeepFallbackInt) { clearInterval(rrBeepFallbackInt); rrBeepFallbackInt = null; }
+function stopSpecialAlarm() {
+  Object.values(SPECIAL_MODES).forEach(cfg => {
+    const a = document.getElementById(cfg.audioId);
+    if (a) { try { a.pause(); a.currentTime = 0; } catch(e) {} }
+    if (cfg.gifId) {
+      const g = document.getElementById(cfg.gifId);
+      if (g) g.classList.remove('show');
+    }
+  });
+  if (specialBeepFallbackInt) { clearInterval(specialBeepFallbackInt); specialBeepFallbackInt = null; }
 }
 
 function startAlarm() {
@@ -884,10 +912,10 @@ function startAlarm() {
   if (alarmInt) clearInterval(alarmInt);
   if (alarmAutoStop) clearTimeout(alarmAutoStop);
 
-  const rickrollOn = S.rickroll && S.soundEnabled;
+  const mode = S.soundEnabled ? activeSpecialMode() : null;
 
-  if (rickrollOn) {
-    startRickroll();
+  if (mode) {
+    startSpecialAlarm(mode);
   } else {
     const beep = () => [0, .18, .36, .54].forEach((d, i) => tone(i % 2 ? 660 : 880, .14, .22, 'square', d));
     beep();
@@ -896,8 +924,8 @@ function startAlarm() {
   document.getElementById('af').classList.add('on');
   if (S.vibration && navigator.vibrate) navigator.vibrate([300, 100, 300, 100, 600]);
 
-  // Auto-mute after 15 seconds if voice didn't stop it (rickroll plays on until stopped manually)
-  if (!rickrollOn) {
+  // Auto-mute after 15 seconds if voice didn't stop it (modo especial plays on until stopped manually)
+  if (!mode) {
     alarmAutoStop = setTimeout(() => {
       clearInterval(alarmInt); alarmInt = null;
       // Keep visual alarm + button, just stop the noise
@@ -915,7 +943,7 @@ function stopAlarmSound() {
   clearTimeout(alarmAutoStop); alarmAutoStop=null;
   alarmSoundActive = false;
   stopVoice();
-  stopRickroll();
+  stopSpecialAlarm();
   // Keep flash visible while groups are done
 }
 
@@ -976,9 +1004,18 @@ function stopAllAlarms() {
 /* ── STATE ────────────────────────────────────────────────────────── */
 let groups=[],history=[],gCnt=0,tickId=null,warned=new Set();
 let _pSl=-1,_pPz=-1;
-const DEFS={defaultDuration:120,volume:.7,soundEnabled:true,vibration:true,confirmDelete:false,showSecs:true,sort:true,warnPct:40,urgentPct:15,rickroll:false};
+const DEFS={defaultDuration:120,volume:.7,soundEnabled:true,vibration:true,confirmDelete:false,showSecs:true,sort:true,warnPct:40,urgentPct:15,rickroll:false,finalCutDown:false};
 let S=Object.assign({},DEFS,JSON.parse(localStorage.getItem('ct_s')||'{}'));
 function saveS() { localStorage.setItem('ct_s',JSON.stringify(S)); }
+// Rickroll y The Final Cut Down son mutuamente excluyentes: solo puede
+// sonar la música de uno de los dos modos a la vez, nunca ambos.
+function setSpecialMode(key, value) {
+  S.rickroll = false;
+  S.finalCutDown = false;
+  if (value) S[key] = true;
+  saveS();
+  renderSp();
+}
 
 /* ── TIMESTAMP TIMERS ─────────────────────────────────────────────── */
 function ensureTick() { if(!tickId) tickId=setInterval(tick,1000); }
@@ -1357,7 +1394,11 @@ function renderSp() {
       </div>
       <div class="sp-row"><label>Rickroll 🎵</label>
         <div class="tog${S.rickroll?' on':''}"
-          onclick="S.rickroll=!S.rickroll;this.classList.toggle('on');saveS()"></div>
+          onclick="setSpecialMode('rickroll',!S.rickroll)"></div>
+      </div>
+      <div class="sp-row"><label>The Final Cut Down 🎬</label>
+        <div class="tog${S.finalCutDown?' on':''}"
+          onclick="setSpecialMode('finalCutDown',!S.finalCutDown)"></div>
       </div>
     </div>
     <div class="pg">
@@ -1478,7 +1519,7 @@ async function initApp() {
 }
 
 // Unlock audio on first interaction (required by browsers)
-['click','touchstart'].forEach(ev=>document.addEventListener(ev,()=>{try{ac().resume()}catch(e){}unlockRickrollAudio();},{once:true}));
+['click','touchstart'].forEach(ev=>document.addEventListener(ev,()=>{try{ac().resume()}catch(e){}unlockSpecialAudio();},{once:true}));
 
 // Handle #nuevo shortcut from manifest
 if(location.hash==='#nuevo') openModal();
